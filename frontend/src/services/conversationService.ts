@@ -1,6 +1,7 @@
 import { type Message } from '../hooks/useChat';
 import { Observable, from, of, throwError } from 'rxjs';
-import { map, catchError } from 'rxjs/operators';
+import { map, catchError, tap } from 'rxjs/operators';
+import { conversationStore } from './conversationStore';
 
 export interface Conversation {
   id: string;
@@ -80,6 +81,10 @@ export class ConversationService {
           return response.json();
         })
     ).pipe(
+      tap(conversation => {
+        // Update the store with the new conversation
+        conversationStore.updateConversation(conversation);
+      }),
       catchError(error => {
         console.error('Error creating conversation:', error);
         return throwError(() => error);
@@ -106,6 +111,10 @@ export class ConversationService {
           return response.json();
         })
     ).pipe(
+      tap(conversation => {
+        // Update the store with the updated conversation
+        conversationStore.updateConversation(conversation);
+      }),
       catchError(error => {
         console.error(`Error updating conversation ${id}:`, error);
         return throwError(() => error);
@@ -128,6 +137,10 @@ export class ConversationService {
           return response.json();
         })
     ).pipe(
+      tap(() => {
+        // Remove the conversation from the store
+        conversationStore.removeConversation(id);
+      }),
       catchError(error => {
         console.error(`Error deleting conversation ${id}:`, error);
         return throwError(() => error);

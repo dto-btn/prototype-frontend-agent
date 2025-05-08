@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ConversationService } from '../services/conversationService';
 import type { Conversation } from '../services/conversationService';
+import { conversationStore } from '../services/conversationStore';
 
 interface ConversationSidebarProps {
   activeConversationId: string | null;
@@ -17,34 +18,16 @@ export function ConversationSidebar({
   const [isLoading, setIsLoading] = useState(false);
   const [isOpen, setIsOpen] = useState(true);
 
-  // Load conversations on component mount
+  // Subscribe to the conversation store for real-time updates
   useEffect(() => {
-    loadConversations();
-  }, []);
-
-  const loadConversations = async () => {
-    setIsLoading(true);
+    const conversationSub = conversationStore.conversations.subscribe(setConversations);
+    const loadingSub = conversationStore.isLoading.subscribe(setIsLoading);
     
-    try {
-      const result = await new Promise<Conversation[]>((resolve, reject) => {
-        ConversationService.getAllConversations().subscribe({
-          next: (data) => resolve(data),
-          error: (err) => reject(err)
-        });
-      });
-      
-      // Sort conversations by updated_at in descending order (newest first)
-      const sorted = [...result].sort((a, b) => 
-        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-      );
-      
-      setConversations(sorted);
-    } catch (error) {
-      console.error('Error loading conversations:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    return () => {
+      conversationSub.unsubscribe();
+      loadingSub.unsubscribe();
+    };
+  }, []);
 
   const handleDeleteConversation = async (id: string, e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation(); // Prevent triggering conversation selection
@@ -53,13 +36,14 @@ export function ConversationSidebar({
       try {
         await new Promise<void>((resolve, reject) => {
           ConversationService.deleteConversation(id).subscribe({
-            next: () => resolve(),
+            next: () => {
+              // Update local store immediately for responsive UI
+              conversationStore.removeConversation(id);
+              resolve();
+            },
             error: (err) => reject(err)
           });
         });
-        
-        // Refresh the list
-        loadConversations();
         
         // If the deleted conversation was active, trigger new conversation
         if (activeConversationId === id) {
@@ -69,6 +53,10 @@ export function ConversationSidebar({
         console.error(`Error deleting conversation ${id}:`, error);
       }
     }
+  };
+
+  const refreshConversations = () => {
+    conversationStore.loadConversations();
   };
 
   const toggleSidebar = () => {
@@ -142,7 +130,7 @@ export function ConversationSidebar({
         <div className="p-2 border-t border-base-content/10">
           <button 
             className="btn btn-sm btn-outline btn-block"
-            onClick={loadConversations}
+            onClick={refreshConversations}
             disabled={isLoading}
           >
             {isLoading ? (

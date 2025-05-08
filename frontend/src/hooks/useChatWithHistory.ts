@@ -94,6 +94,7 @@ class ChatHistoryService {
         );
         this.conversationId$.next(conversation.id);
         id = conversation.id;
+        // No need to manually update conversationStore as ConversationService now does it
       } catch (error) {
         console.error('Error creating conversation:', error);
         return;
