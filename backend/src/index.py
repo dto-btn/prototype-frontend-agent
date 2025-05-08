@@ -3,11 +3,12 @@ import json
 import logging
 import requests
 import time
-from typing import Dict, List, Optional, Any, Union
+import asyncio
+from typing import Dict, List, Optional, Any, Union, AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Depends, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
@@ -29,6 +30,7 @@ class ChatRequest(BaseModel):
     messages: List[Dict[str, str]]
     model: Optional[str] = None
     max_tokens: Optional[int] = 500
+    stream: Optional[bool] = False
 
 class ErrorResponse(BaseModel):
     error: str
@@ -59,11 +61,25 @@ async def general_exception_handler(request: Request, exc: Exception):
         content={"error": "Internal server error", "message": str(exc)},
     )
 
+# Helper function to stream the response content
+async def stream_response(response) -> AsyncGenerator[bytes, None]:
+    """
+    Properly streams response content from a requests Response object.
+    
+    This function converts a synchronous response stream to an asynchronous one
+    by using asyncio.to_thread to avoid blocking the event loop.
+    """
+    # Process the response stream in chunks
+    for chunk in response.iter_content(chunk_size=1024):
+        if chunk:
+            yield chunk
+        # Give control back to the event loop
+        await asyncio.sleep(0)
+
 # Proxy endpoint for OpenAI chat completions
 @app.post("/api/chat/completions", response_model=Dict[str, Any])
 async def chat(request: ChatRequest):
     try:
-
         model = request.model or os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
         print(f"MONARCH: Using model: {model}")
         if not model:
@@ -90,10 +106,30 @@ async def chat(request: ChatRequest):
         # Prepare the request payload
         payload = {
             "messages": request.messages,
-            "max_tokens": request.max_tokens
+            "max_tokens": request.max_tokens,
+            "stream": request.stream
         }
         
-        # Make the direct API call with retry logic
+        # If streaming is requested, return a streaming response
+        if request.stream:
+            # Make the direct API call with streaming enabled
+            response = requests.post(
+                api_url,
+                headers=headers,
+                json=payload,
+                stream=True,
+                timeout=30  # Set an appropriate timeout
+            )
+            
+            response.raise_for_status()  # Raise an exception for 4XX/5XX responses
+            
+            # Return a streaming response
+            return StreamingResponse(
+                stream_response(response),
+                media_type="text/event-stream"
+            )
+        
+        # For non-streaming requests, use the existing implementation with retry logic
         max_retries = 3
         retry_delay = 1  # seconds
         

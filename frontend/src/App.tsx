@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { OpenAI } from "openai";
 
 interface Message {
@@ -24,6 +24,8 @@ function App() {
 
   const [input, setInput] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
+  const [currentStreamingMessage, setCurrentStreamingMessage] = useState<string>('');
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Initialize OpenAI client
   const openai = new OpenAI({
@@ -41,6 +43,15 @@ function App() {
     setMessages(newMessages);
     setInput('');
     setIsLoading(true);
+    setCurrentStreamingMessage('');
+    
+    // Cancel any previous streaming request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    // Create a new abort controller for this request
+    abortControllerRef.current = new AbortController();
     
     try {
       // Prepare messages for API - include all conversation history
@@ -49,27 +60,59 @@ function App() {
         ...newMessages
       ];
       
-      // Use OpenAI client to call our backend proxy API
-      const completion = await openai.chat.completions.create({
+      // Use streaming for improved user experience
+      const stream = await openai.chat.completions.create({
         messages: apiMessages as any[],
         model: 'gpt-4o',
-        max_tokens: 500
+        max_tokens: 500,
+        stream: true,
+        signal: abortControllerRef.current.signal
       });
+
+      let fullContent = '';
+      for await (const chunk of stream) {
+        const content = chunk.choices[0]?.delta?.content || '';
+        fullContent += content;
+        setCurrentStreamingMessage(fullContent);
+      }
+
+      // Once streaming is complete, add the full message to the chat
+      setMessages([...newMessages, { 
+        role: 'assistant', 
+        content: fullContent || 'Sorry, I couldn\'t generate a response.'
+      }]);
       
-      // Get the assistant's response
-      const assistantMessage = completion.choices[0].message;
-      setMessages([...newMessages, { 
-        role: 'assistant', 
-        content: assistantMessage.content || 'Sorry, I couldn\'t generate a response.'
-      }]);
     } catch (error) {
-      console.error('Error calling API:', error);
-      setMessages([...newMessages, { 
-        role: 'assistant', 
-        content: 'Sorry, there was an error processing your request. Please try again later.'
-      }]);
+      // Ignore abort errors as they're expected when canceling
+      if ((error as Error).name !== 'AbortError') {
+        console.error('Error calling API:', error);
+        setMessages([...newMessages, { 
+          role: 'assistant', 
+          content: 'Sorry, there was an error processing your request. Please try again later.'
+        }]);
+      }
     } finally {
       setIsLoading(false);
+      setCurrentStreamingMessage('');
+      abortControllerRef.current = null;
+    }
+  };
+
+  // Function to cancel a streaming response
+  const handleCancelStream = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      setIsLoading(false);
+      
+      // If we have a partial message, add it to the conversation
+      if (currentStreamingMessage) {
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: currentStreamingMessage + ' [Response interrupted]'
+        }]);
+        setCurrentStreamingMessage('');
+      }
     }
   };
 
@@ -92,7 +135,14 @@ function App() {
               </div>
             </div>
           ))}
-          {isLoading && (
+          {isLoading && currentStreamingMessage && (
+            <div className="chat chat-start">
+              <div className="chat-bubble chat-bubble-secondary">
+                {currentStreamingMessage}
+              </div>
+            </div>
+          )}
+          {isLoading && !currentStreamingMessage && (
             <div className="chat chat-start">
               <div className="chat-bubble chat-bubble-secondary flex items-center gap-2">
                 <span className="loading loading-dots loading-sm"></span>
@@ -119,13 +169,22 @@ function App() {
             }}
             disabled={isLoading}
           />
-          <button 
-            className={`btn ${isLoading ? 'btn-disabled' : 'btn-primary'}`}
-            onClick={handleSendMessage}
-            disabled={isLoading}
-          >
-            {isLoading ? <span className="loading loading-spinner loading-sm"></span> : 'Send'}
-          </button>
+          {isLoading ? (
+            <button 
+              className="btn btn-warning"
+              onClick={handleCancelStream}
+            >
+              Cancel
+            </button>
+          ) : (
+            <button 
+              className="btn btn-primary"
+              onClick={handleSendMessage}
+              disabled={isLoading}
+            >
+              Send
+            </button>
+          )}
         </div>
       </div>
     </div>
