@@ -52,14 +52,15 @@ function App() {
     isFirstMessageSent.next(true);
   };
 
-  // Auto-save the conversation after the first message
+  // Modified to avoid duplicate save operations
   const handleSendWithSave = async () => {
+    // If this is the first message and there's no conversation ID yet,
+    // we don't need to manually call saveConversation because
+    // addAssistantMessage will automatically create a conversation
     await handleSendMessage();
     
-    // If this is the first message in a new conversation, generate a default title
-    if (!isFirstMessageSent.getValue() && !conversationId && input.trim()) {
-      const title = input.substring(0, 30) + (input.length > 30 ? '...' : '');
-      await saveConversation(title);
+    // Mark as sent so we don't try to save again if user sends another message
+    if (!isFirstMessageSent.getValue()) {
       isFirstMessageSent.next(true);
     }
   };

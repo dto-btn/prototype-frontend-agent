@@ -1,6 +1,6 @@
 import { BehaviorSubject, Observable, firstValueFrom } from 'rxjs';
 import { map } from 'rxjs/operators';
-import { ConversationService, Conversation } from './conversationService';
+import { ConversationService, type Conversation } from './conversationService';
 
 // Singleton service to manage conversation state
 class ConversationStore {

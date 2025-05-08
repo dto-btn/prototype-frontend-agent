@@ -3,6 +3,7 @@ import { useChat, type Message, type UseChatResult } from './useChat';
 import { BehaviorSubject, Observable, of, Subject, firstValueFrom } from 'rxjs';
 import { switchMap, catchError, tap, finalize } from 'rxjs/operators';
 import { ConversationService } from '../services/conversationService';
+import { debounce } from '../utils/debounce';
 
 interface UseChatWithHistoryOptions {
   initialMessages?: Message[];
@@ -29,6 +30,19 @@ class ChatHistoryService {
   private conversationId$ = new BehaviorSubject<string | null>(null);
   private isSaving$ = new BehaviorSubject<boolean>(false);
   private saveConversation$ = new Subject<{ id: string, title: string, messages: Message[] }>();
+  private pendingSave = false; // Track if a save is already pending
+  
+  // Debounced method to trigger conversation save
+  private debouncedSave = debounce((id: string, title: string, messages: Message[]) => {
+    if (!this.pendingSave) {
+      this.pendingSave = true;
+      this.saveConversation$.next({
+        id,
+        title,
+        messages
+      });
+    }
+  }, 300); // 300ms debounce
   
   constructor(initialMessages: Message[] = [], initialConversationId?: string) {
     this.messages$.next(initialMessages);
@@ -52,7 +66,10 @@ class ChatHistoryService {
           })
         )
       ),
-      finalize(() => this.isSaving$.next(false))
+      finalize(() => {
+        this.isSaving$.next(false);
+        this.pendingSave = false; // Reset pending flag after operation completes
+      })
     ).subscribe(result => {
       if (result) {
         console.log('Conversation saved:', result);
@@ -161,14 +178,14 @@ class ChatHistoryService {
     this.messages$.next([...this.messages$.getValue(), userMessage]);
     this.input$.next('');
     
-    // Auto-save if we have a conversation ID
+    // Auto-save if we have a conversation ID, using debounce
     const conversationId = this.conversationId$.getValue();
     if (conversationId) {
-      this.saveConversation$.next({
-        id: conversationId,
-        title: this.extractTitle(content),
-        messages: this.messages$.getValue()
-      });
+      this.debouncedSave(
+        conversationId,
+        this.extractTitle(content),
+        this.messages$.getValue()
+      );
     }
   }
   
@@ -181,13 +198,13 @@ class ChatHistoryService {
     
     const conversationId = this.conversationId$.getValue();
     
-    // If we already have a conversation ID, update it
+    // If we already have a conversation ID, update it with debounce
     if (conversationId) {
-      this.saveConversation$.next({
-        id: conversationId,
-        title: this.extractTitle(updatedMessages[0]?.content || ''),
-        messages: updatedMessages
-      });
+      this.debouncedSave(
+        conversationId,
+        this.extractTitle(updatedMessages[0]?.content || ''),
+        updatedMessages
+      );
     } 
     // If this is a new conversation (no ID yet) and we have messages, create a new one
     else if (updatedMessages.length >= 2) { // At least one user message and one assistant message
