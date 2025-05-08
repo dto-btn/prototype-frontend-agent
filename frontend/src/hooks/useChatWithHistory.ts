@@ -1,5 +1,6 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useChat, type Message, type UseChatResult } from './useChat';
+import { BehaviorSubject, Observable } from 'rxjs';
 
 interface UseChatWithHistoryOptions {
   initialMessages?: Message[];
@@ -14,10 +15,57 @@ interface UseChatWithHistoryResult extends Omit<UseChatResult, 'sendMessage'> {
   handleCancelStream: () => void;
 }
 
+// RxJS service to manage chat history
+class ChatHistoryService {
+  private messages$ = new BehaviorSubject<Message[]>([]);
+  private input$ = new BehaviorSubject<string>('');
+  
+  constructor(initialMessages: Message[] = []) {
+    this.messages$.next(initialMessages);
+  }
+  
+  get messages(): Message[] {
+    return this.messages$.getValue();
+  }
+  
+  get input(): string {
+    return this.input$.getValue();
+  }
+  
+  get messages$Observable(): Observable<Message[]> {
+    return this.messages$.asObservable();
+  }
+  
+  get input$Observable(): Observable<string> {
+    return this.input$.asObservable();
+  }
+  
+  setInput(value: string): void {
+    this.input$.next(value);
+  }
+  
+  addUserMessage(content: string): void {
+    if (!content.trim()) return;
+    
+    const userMessage: Message = { role: 'user', content };
+    this.messages$.next([...this.messages$.getValue(), userMessage]);
+    this.input$.next('');
+  }
+  
+  addAssistantMessage(content: string): void {
+    if (!content) return;
+    
+    const assistantMessage: Message = { role: 'assistant', content };
+    this.messages$.next([...this.messages$.getValue(), assistantMessage]);
+  }
+}
+
 export function useChatWithHistory({
   initialMessages = [],
   chatOptions = {}
 }: UseChatWithHistoryOptions = {}): UseChatWithHistoryResult {
+  // Create a ref to hold the service instance to ensure it persists across renders
+  const historyServiceRef = useRef<ChatHistoryService | null>(null);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState<string>('');
   
@@ -27,47 +75,67 @@ export function useChatWithHistory({
     sendMessage,
     cancelStream
   } = useChat(chatOptions);
-
+  
+  // Initialize the history service if it doesn't exist
+  if (!historyServiceRef.current) {
+    historyServiceRef.current = new ChatHistoryService(initialMessages);
+  }
+  
+  useEffect(() => {
+    const historyService = historyServiceRef.current!;
+    
+    // Subscribe to the service's observables
+    const messagesSub = historyService.messages$Observable.subscribe(setMessages);
+    const inputSub = historyService.input$Observable.subscribe(setInput);
+    
+    // Cleanup subscriptions on unmount
+    return () => {
+      messagesSub.unsubscribe();
+      inputSub.unsubscribe();
+    };
+  }, []);
+  
   const handleSendMessage = useCallback(async () => {
     if (input.trim() === '' || isLoading) return;
     
-    // Add user message to history
-    const userMessage: Message = { role: 'user', content: input };
-    const newMessages = [...messages, userMessage];
-    setMessages(newMessages);
-    setInput('');
+    const historyService = historyServiceRef.current!;
+    historyService.addUserMessage(input);
     
-    // Send message to API
-    const response = await sendMessage(newMessages);
+    // Send message to API with current message history
+    const response = await sendMessage(historyService.messages);
     
-    // If we got a response and it wasn't cancelled, add it to history
+    // If we got a response, add it to history
     if (response) {
-      setMessages(prev => [...prev, { 
-        role: 'assistant', 
-        content: response
-      }]);
+      historyService.addAssistantMessage(response);
     }
-  }, [input, isLoading, messages, sendMessage]);
-
+  }, [input, isLoading, sendMessage]);
+  
   const handleCancelStream = useCallback(() => {
-    const interruptedContent = cancelStream();
+    // Call the cancelStream function from useChat hook
+    // Note: Although the interface says cancelStream returns void,
+    // the implementation actually returns a string
     
-    // If we have a partial message, add it to the conversation
-    if (interruptedContent) {
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: interruptedContent
-      }]);
+    // We need to use a type assertion here to resolve the type mismatch
+    const result = cancelStream() as unknown as string;
+    
+    // Check if we have actual content to add
+    if (result && result.length > 0) {
+      historyServiceRef.current?.addAssistantMessage(result);
     }
   }, [cancelStream]);
-
+  
+  const handleSetInput = useCallback((value: string) => {
+    historyServiceRef.current?.setInput(value);
+  }, []);
+  
   return {
     messages,
     input,
-    setInput,
+    setInput: handleSetInput,
     isLoading,
     currentStreamingMessage,
     handleSendMessage,
-    handleCancelStream
+    handleCancelStream,
+    cancelStream
   };
 }
