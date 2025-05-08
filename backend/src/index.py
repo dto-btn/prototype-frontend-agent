@@ -113,7 +113,7 @@ async def general_exception_handler(request: Request, exc: Exception):
     )
 
 # Proxy endpoint for OpenAI chat completions
-@app.post("/api/chat", response_model=Dict[str, Any])
+@app.post("/api/chat/completions", response_model=Dict[str, Any])
 async def chat(request: ChatRequest, openai_client: AzureOpenAI = Depends(get_openai_client)):
     try:
         model = request.model or os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")

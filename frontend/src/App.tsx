@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { OpenAI } from "openai";
 
 interface Message {
   role: 'user' | 'assistant' | 'system';
@@ -24,6 +25,13 @@ function App() {
   const [input, setInput] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
 
+  // Initialize OpenAI client
+  const openai = new OpenAI({
+    baseURL: 'http://localhost:5000/api', // Point to our backend proxy
+    dangerouslyAllowBrowser: true, // Allow running in browser (only for development)
+    apiKey: 'dummy-key', // This will be ignored by our backend proxy
+  });
+
   const handleSendMessage = async () => {
     if (input.trim() === '' || isLoading) return;
     
@@ -41,27 +49,15 @@ function App() {
         ...newMessages
       ];
       
-      // Call our backend proxy API instead of OpenAI directly
-      const response = await fetch('http://localhost:5000/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          messages: apiMessages,
-          model: 'gpt-4o',
-          max_tokens: 500
-        }),
+      // Use OpenAI client to call our backend proxy API
+      const completion = await openai.chat.completions.create({
+        messages: apiMessages as any[],
+        model: 'gpt-4o',
+        max_tokens: 500
       });
       
-      if (!response.ok) {
-        throw new Error('Failed to get response from server');
-      }
-      
-      const data = await response.json();
-      
       // Get the assistant's response
-      const assistantMessage = data.choices[0].message;
+      const assistantMessage = completion.choices[0].message;
       setMessages([...newMessages, { 
         role: 'assistant', 
         content: assistantMessage.content || 'Sorry, I couldn\'t generate a response.'
