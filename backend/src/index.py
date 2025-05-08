@@ -1,6 +1,8 @@
 import os
 import json
 import logging
+import requests
+import time
 from typing import Dict, List, Optional, Any, Union
 from contextlib import asynccontextmanager
 
@@ -9,7 +11,6 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
-from openai import AzureOpenAI
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -33,58 +34,11 @@ class ErrorResponse(BaseModel):
     error: str
     message: Optional[str] = None
 
-# Configure Azure OpenAI client
-def get_azure_openai_client():
-    """
-    Initialize and return an Azure OpenAI client using Azure AD authentication
-    Following Azure best practices for secure authentication
-    """
-    try:
-        token_provider = get_bearer_token_provider(
-            DefaultAzureCredential(),
-            "https://cognitiveservices.azure.com/.default"
-        )
-        
-        azure_openai_uri = os.getenv("AZURE_OPENAI_ENDPOINT")
-        api_version = os.getenv("AZURE_OPENAI_VERSION", "2024-05-01-preview")
-        print(f"MONARCH: Using Azure OpenAI URI: {azure_openai_uri}")
-        print(f"MONARCH: Using Azure OpenAI API version: {api_version}")
-        
-        if not azure_openai_uri:
-            logger.error("AZURE_OPENAI_ENDPOINT environment variable is not set")
-            raise ValueError("AZURE_OPENAI_ENDPOINT environment variable is not set")
-        
-        client = AzureOpenAI(
-            api_version=api_version,
-            azure_endpoint=azure_openai_uri,
-            azure_ad_token_provider=token_provider
-        )
-        
-        logger.info("Successfully initialized Azure OpenAI client")
-        return client
-    except Exception as e:
-        logger.error(f"Failed to initialize Azure OpenAI client: {str(e)}")
-        raise
-
-# Application lifespan context manager
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Initialize OpenAI client on startup
-    try:
-        app.state.openai_client = get_azure_openai_client()
-    except Exception as e:
-        logger.error(f"Failed to initialize Azure OpenAI client: {str(e)}")
-        app.state.openai_client = None
-    yield
-    # Clean up on shutdown
-    app.state.openai_client = None
-
 # Initialize FastAPI app
 app = FastAPI(
     title="Azure OpenAI Proxy API",
     description="A proxy API for Azure OpenAI services",
     version="1.0.0",
-    lifespan=lifespan
 )
 
 # Add CORS middleware
@@ -95,13 +49,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Dependency to get OpenAI client
-async def get_openai_client(request: Request) -> AzureOpenAI:
-    if not request.app.state.openai_client:
-        logger.error("OpenAI client not initialized")
-        raise HTTPException(status_code=500, detail="OpenAI client not initialized")
-    return request.app.state.openai_client
 
 # Error handler
 @app.exception_handler(Exception)
@@ -114,8 +61,9 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 # Proxy endpoint for OpenAI chat completions
 @app.post("/api/chat/completions", response_model=Dict[str, Any])
-async def chat(request: ChatRequest, openai_client: AzureOpenAI = Depends(get_openai_client)):
+async def chat(request: ChatRequest):
     try:
+
         model = request.model or os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
         print(f"MONARCH: Using model: {model}")
         if not model:
@@ -123,15 +71,56 @@ async def chat(request: ChatRequest, openai_client: AzureOpenAI = Depends(get_op
                 status_code=400, 
                 detail="Model is required. Either specify it in the request or set AZURE_OPENAI_DEPLOYMENT_NAME environment variable"
             )
-            
-        completion = openai_client.chat.completions.create(
-            model=model,
-            messages=request.messages,
-            max_tokens=request.max_tokens,
-        )
         
-        # Convert the response to a dictionary
-        return completion.model_dump()
+        # Construct the API URL
+        api_url = f"{os.getenv('AZURE_OPENAI_ENDPOINT')}/openai/deployments/{model}/chat/completions?api-version={os.getenv('AZURE_OPENAI_VERSION', '2024-05-01-preview')}"
+        
+        # Get the token using the existing token provider
+        token = get_bearer_token_provider(
+            DefaultAzureCredential(),
+            "https://cognitiveservices.azure.com/.default"
+        )()
+        
+        # Prepare headers with authentication
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}"
+        }
+        
+        # Prepare the request payload
+        payload = {
+            "messages": request.messages,
+            "max_tokens": request.max_tokens
+        }
+        
+        # Make the direct API call with retry logic
+        max_retries = 3
+        retry_delay = 1  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    api_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=30  # Set an appropriate timeout
+                )
+                
+                response.raise_for_status()  # Raise an exception for 4XX/5XX responses
+                completion_data = response.json()
+                break
+            except requests.exceptions.RequestException as e:
+                if attempt == max_retries - 1:  # Last attempt
+                    logger.exception(f"Error calling Azure OpenAI API after {max_retries} attempts")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Error processing your request: {str(e)}"
+                    )
+                # Wait before retrying with exponential backoff
+                time.sleep(retry_delay * (2 ** attempt))
+        
+        # Return the response data
+        return completion_data
     
     except Exception as e:
         logger.exception("Error calling Azure OpenAI API")
