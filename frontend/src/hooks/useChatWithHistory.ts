@@ -4,6 +4,7 @@ import { BehaviorSubject, Observable, of, Subject, firstValueFrom } from 'rxjs';
 import { switchMap, catchError, tap, finalize } from 'rxjs/operators';
 import { ConversationService } from '../services/conversationService';
 import { debounce } from '../utils/debounce';
+import { generateTitle } from '../services/titleGenerationService';
 
 interface UseChatWithHistoryOptions {
   initialMessages?: Message[];
@@ -29,16 +30,20 @@ class ChatHistoryService {
   private input$ = new BehaviorSubject<string>('');
   private conversationId$ = new BehaviorSubject<string | null>(null);
   private isSaving$ = new BehaviorSubject<boolean>(false);
-  private saveConversation$ = new Subject<{ id: string, title: string, messages: Message[] }>();
+  private title$ = new BehaviorSubject<string>('New Conversation');
+  private saveConversation$ = new Subject<{ id: string, title?: string, messages: Message[] }>();
   private pendingSave = false; // Track if a save is already pending
+  private titleGenerated = false; // Track if we've already generated a title
+  private awaitingTitleUpdate = false; // Track if we're waiting for an AI title update
   
   // Debounced method to trigger conversation save
-  private debouncedSave = debounce((id: string, title: string, messages: Message[]) => {
+  private debouncedSave = debounce((id: string, title: string | undefined, messages: Message[]) => {
     if (!this.pendingSave) {
       this.pendingSave = true;
       this.saveConversation$.next({
         id,
-        title,
+        // If title is undefined, don't include it in the update
+        ...(title !== undefined && { title }),
         messages
       });
     }
@@ -51,13 +56,22 @@ class ChatHistoryService {
       this.conversationId$.next(initialConversationId);
       this.loadConversation(initialConversationId);
     }
+
+    // If we have initial messages, set a default title based on them
+    if (initialMessages.length > 0) {
+      const userMessage = initialMessages.find(m => m.role === 'user');
+      if (userMessage) {
+        this.title$.next(this.extractTitle(userMessage.content));
+      }
+    }
     
     // Set up save conversation subscription
     this.saveConversation$.pipe(
       tap(() => this.isSaving$.next(true)),
       switchMap(({ id, title, messages }) => 
         ConversationService.updateConversation(id, {
-          title, 
+          // Only include title in the update if it's defined
+          ...(title !== undefined && { title }),
           messages
         }).pipe(
           catchError(error => {
@@ -141,6 +155,10 @@ class ChatHistoryService {
   get isSaving(): boolean {
     return this.isSaving$.getValue();
   }
+
+  get title(): string {
+    return this.title$.getValue();
+  }
   
   get messages$Observable(): Observable<Message[]> {
     return this.messages$.asObservable();
@@ -157,6 +175,10 @@ class ChatHistoryService {
   get isSaving$Observable(): Observable<boolean> {
     return this.isSaving$.asObservable();
   }
+
+  get title$Observable(): Observable<string> {
+    return this.title$.asObservable();
+  }
   
   setInput(value: string): void {
     this.input$.next(value);
@@ -166,8 +188,13 @@ class ChatHistoryService {
     if (id) {
       this.loadConversation(id);
     } else {
+      // This is a new conversation, reset all relevant state
       this.conversationId$.next(null);
       this.messages$.next([]);
+      this.title$.next('New Conversation');
+      this.titleGenerated = false; // Reset title generation flag
+      this.awaitingTitleUpdate = false; // Reset awaiting title update flag
+      console.log('Reset title generation state for new conversation');
     }
   }
   
@@ -183,7 +210,7 @@ class ChatHistoryService {
     if (conversationId) {
       this.debouncedSave(
         conversationId,
-        this.extractTitle(content),
+        undefined, // Don't update the title for existing conversations
         this.messages$.getValue()
       );
     }
@@ -198,11 +225,54 @@ class ChatHistoryService {
     
     const conversationId = this.conversationId$.getValue();
     
+    // Check if this is a new conversation that just completed a first Q&A exchange:
+    // 1. We have 3 messages (greeting, user question, assistant answer)
+    // 2. They follow the correct role pattern
+    // 3. We haven't generated a title for this conversation yet
+    const isFirstQAComplete = 
+      updatedMessages.length === 3 && 
+      updatedMessages[0].role === 'assistant' &&
+      updatedMessages[1].role === 'user' &&
+      updatedMessages[2].role === 'assistant' &&
+      !this.titleGenerated;
+    
+    if (isFirstQAComplete) {
+      console.log('First complete Q&A detected, generating title...');
+      const userMessage = updatedMessages[1].content;
+      const assistantResponse = updatedMessages[2].content;
+      
+      // Show a temporary title while AI generates the better one
+      const tempTitle = this.extractTitle(userMessage);
+      this.title$.next(tempTitle);
+      this.awaitingTitleUpdate = true; // Mark this conversation as awaiting title update
+      
+      // Generate AI title asynchronously and update when ready
+      this.generateTitle(userMessage, assistantResponse).then(title => {
+        console.log('AI title generated:', title);
+        // Update the title in the UI
+        this.title$.next(title);
+        
+        // If we have a conversation ID by now, update the title
+        const currentId = this.conversationId$.getValue();
+        if (currentId && this.awaitingTitleUpdate) {
+          console.log('Updating title for recently created conversation:', currentId, title);
+          this.debouncedSave(
+            currentId,
+            title,
+            this.messages$.getValue()
+          );
+          this.awaitingTitleUpdate = false;
+        }
+      });
+    }
+    
     // If we already have a conversation ID, update it with debounce
     if (conversationId) {
+      // Only update title if this conversation is awaiting a title update
+      // Otherwise, don't change the title, just update the messages
       this.debouncedSave(
         conversationId,
-        this.extractTitle(updatedMessages[0]?.content || ''),
+        this.awaitingTitleUpdate ? this.title$.getValue() : undefined,
         updatedMessages
       );
     } 
@@ -210,7 +280,9 @@ class ChatHistoryService {
     else if (updatedMessages.length >= 2) { // At least one user message and one assistant message
       const userMessage = updatedMessages.find(m => m.role === 'user');
       if (userMessage) {
-        const title = this.extractTitle(userMessage.content);
+        // Use the generated title if available, otherwise extract from the message
+        const title = this.titleGenerated ? this.title$.getValue() : this.extractTitle(userMessage.content);
+        
         // Create a new conversation asynchronously
         firstValueFrom(
           ConversationService.createConversation(title, updatedMessages)
@@ -219,8 +291,39 @@ class ChatHistoryService {
           this.conversationId$.next(conversation.id);
         }).catch(error => {
           console.error('Error creating conversation after completion:', error);
+          this.awaitingTitleUpdate = false; // Reset flag on error
         });
       }
+    }
+  }
+  
+  // Generate a meaningful title based on the conversation content using AI
+  private async generateTitle(userMessage: string, assistantResponse: string): Promise<string> {
+    try {
+      // Use the AI-powered title generation service
+      console.log('Generating title with AI for conversation');
+      const title = await generateTitle(userMessage, assistantResponse);
+      console.log('AI generated title:', title);
+      
+      this.titleGenerated = true; // Mark that we've generated a title for this conversation
+      this.title$.next(title);
+      
+      // Important: Update the conversation in the store if we have an ID and are awaiting update
+      const conversationId = this.conversationId$.getValue();
+      if (conversationId && this.awaitingTitleUpdate) {
+        console.log('Updating conversation with AI-generated title:', title);
+        // Update the title in the database and conversationStore
+        this.debouncedSave(conversationId, title, this.messages$.getValue());
+        this.awaitingTitleUpdate = false;
+      }
+      
+      return title;
+    } catch (error) {
+      console.error('Error generating title with AI:', error);
+      this.awaitingTitleUpdate = false; // Reset the flag on error
+      const extractedTitle = this.extractTitle(userMessage); // Fallback to simple extraction
+      this.titleGenerated = true; // Still mark title as generated even with fallback
+      return extractedTitle;
     }
   }
   

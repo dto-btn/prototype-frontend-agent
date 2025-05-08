@@ -35,6 +35,7 @@ class ConversationStore {
     
     try {
       const conversations = await firstValueFrom(ConversationService.getAllConversations());
+      console.log('Loaded conversations from server:', conversations.length);
       this.conversations$.next(conversations);
       this.initialized = true;
     } catch (error) {
@@ -51,11 +52,13 @@ class ConversationStore {
     
     if (index >= 0) {
       // Update existing conversation
+      console.log(`Updating existing conversation in store: ${conversation.id}, title: "${conversation.title}"`);
       const updatedConversations = [...currentConversations];
       updatedConversations[index] = conversation;
       this.conversations$.next(updatedConversations);
     } else {
       // Add new conversation
+      console.log(`Adding new conversation to store: ${conversation.id}, title: "${conversation.title}"`);
       this.conversations$.next([...currentConversations, conversation]);
     }
   }

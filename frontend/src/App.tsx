@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useChatWithHistory } from './hooks/useChatWithHistory';
 import { ConversationSidebar } from './components/ConversationSidebar';
-import { BehaviorSubject } from 'rxjs';
 
 // Default welcome message for new conversations
 const defaultInitialMessages = [
@@ -10,9 +9,6 @@ const defaultInitialMessages = [
     content: 'Hello! I\'m your AI assistant. How can I help you today?'
   }
 ];
-
-// Tracks if a conversation has been automatically saved yet
-const isFirstMessageSent = new BehaviorSubject<boolean>(false);
 
 function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -25,7 +21,6 @@ function App() {
     currentStreamingMessage,
     handleSendMessage,
     handleCancelStream,
-    saveConversation,
     isSaving,
     setConversationId,
     conversationId
@@ -42,27 +37,18 @@ function App() {
 
   // Handle creating a new conversation
   const handleNewConversation = () => {
+    // This will properly reset all state in the ChatHistoryService
     setConversationId(null);
-    isFirstMessageSent.next(false);
   };
 
   // Handle selecting a conversation from the sidebar
   const handleSelectConversation = (id: string) => {
     setConversationId(id);
-    isFirstMessageSent.next(true);
   };
 
-  // Modified to avoid duplicate save operations
+  // Send message handler - title generation is now handled in ChatHistoryService
   const handleSendWithSave = async () => {
-    // If this is the first message and there's no conversation ID yet,
-    // we don't need to manually call saveConversation because
-    // addAssistantMessage will automatically create a conversation
     await handleSendMessage();
-    
-    // Mark as sent so we don't try to save again if user sends another message
-    if (!isFirstMessageSent.getValue()) {
-      isFirstMessageSent.next(true);
-    }
   };
 
   return (

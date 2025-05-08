@@ -96,6 +96,8 @@ export class ConversationService {
    * Update an existing conversation or create if it doesn't exist
    */
   static updateConversation(id: string, update: ConversationUpdate): Observable<Conversation> {
+    console.log(`Updating conversation ${id} with title: "${update.title}"`, update);
+    
     return from(
       fetch(`${API_URL}/conversations/${id}`, {
         method: 'PUT',
@@ -113,6 +115,7 @@ export class ConversationService {
     ).pipe(
       tap(conversation => {
         // Update the store with the updated conversation
+        console.log(`Successfully updated conversation in API, updating store: ${conversation.id}, title: "${conversation.title}"`);
         conversationStore.updateConversation(conversation);
       }),
       catchError(error => {
