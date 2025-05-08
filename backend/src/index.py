@@ -4,10 +4,12 @@ import logging
 import requests
 import time
 import asyncio
+import uuid
+from datetime import datetime
 from typing import Dict, List, Optional, Any, Union, AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Depends, Request, status
+from fastapi import FastAPI, HTTPException, Depends, Request, status, Body
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -32,9 +34,23 @@ class ChatRequest(BaseModel):
     max_tokens: Optional[int] = 500
     stream: Optional[bool] = False
 
+class Conversation(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    title: str
+    messages: List[Message]
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+class ConversationUpdate(BaseModel):
+    title: Optional[str] = None
+    messages: List[Message]
+
 class ErrorResponse(BaseModel):
     error: str
     message: Optional[str] = None
+
+# In-memory store for conversations (in a production app, use a database)
+conversations_db = {}
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -169,6 +185,75 @@ async def chat(request: ChatRequest):
 @app.get("/api/health")
 async def health():
     return {"status": "OK", "message": "Server is running"}
+
+# Conversation endpoints
+@app.get("/api/conversations", response_model=List[Conversation])
+async def get_conversations():
+    """Get all conversations"""
+    return list(conversations_db.values())
+
+@app.get("/api/conversations/{conversation_id}", response_model=Conversation)
+async def get_conversation(conversation_id: str):
+    """Get a specific conversation by ID"""
+    if conversation_id not in conversations_db:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Conversation with ID {conversation_id} not found"
+        )
+    return conversations_db[conversation_id]
+
+@app.post("/api/conversations", response_model=Conversation)
+async def create_conversation(conversation: Conversation):
+    """Create a new conversation"""
+    # Ensure unique ID and set timestamps
+    conversation.id = str(uuid.uuid4())
+    conversation.created_at = datetime.now().isoformat()
+    conversation.updated_at = datetime.now().isoformat()
+    
+    # Store the conversation
+    conversations_db[conversation.id] = conversation
+    return conversation
+
+@app.put("/api/conversations/{conversation_id}", response_model=Conversation)
+async def update_conversation(
+    conversation_id: str, 
+    conversation_update: ConversationUpdate
+):
+    """Update an existing conversation"""
+    if conversation_id not in conversations_db:
+        # Create new conversation if it doesn't exist
+        new_conversation = Conversation(
+            id=conversation_id,
+            title=conversation_update.title or "New Conversation",
+            messages=conversation_update.messages,
+        )
+        conversations_db[conversation_id] = new_conversation
+        return new_conversation
+    
+    # Update existing conversation
+    current = conversations_db[conversation_id]
+    
+    # Update title if provided
+    if conversation_update.title is not None:
+        current.title = conversation_update.title
+    
+    # Always update messages and updated_at timestamp
+    current.messages = conversation_update.messages
+    current.updated_at = datetime.now().isoformat()
+    
+    return current
+
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    """Delete a conversation"""
+    if conversation_id not in conversations_db:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Conversation with ID {conversation_id} not found"
+        )
+    
+    del conversations_db[conversation_id]
+    return {"success": True, "message": f"Conversation {conversation_id} deleted"}
 
 if __name__ == "__main__":
     import uvicorn
