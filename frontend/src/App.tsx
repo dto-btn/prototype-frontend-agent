@@ -1,120 +1,30 @@
-import { useState, useRef } from 'react';
-import { OpenAI } from "openai";
-
-interface Message {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-}
+import { useChatWithHistory } from './hooks/useChatWithHistory';
 
 function App() {
-  const [messages, setMessages] = useState<Message[]>([
+  const initialMessages = [
     {
-      role: 'assistant',
+      role: 'assistant' as const,
       content: 'Hello! I\'m your AI assistant. How can I help you today?'
     },
     {
-      role: 'user',
+      role: 'user' as const,
       content: 'Can you explain how machine learning works?'
     },
     {
-      role: 'assistant',
+      role: 'assistant' as const,
       content: 'Machine learning is a subset of artificial intelligence that enables systems to learn and improve from experience without being explicitly programmed. It works by identifying patterns in data and making predictions or decisions based on those patterns. The basic process involves training a model on a dataset, validating its performance, and then using it to make predictions on new data.'
     }
-  ]);
+  ];
 
-  const [input, setInput] = useState<string>('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [currentStreamingMessage, setCurrentStreamingMessage] = useState<string>('');
-  const abortControllerRef = useRef<AbortController | null>(null);
-
-  // Initialize OpenAI client
-  const openai = new OpenAI({
-    baseURL: 'http://localhost:5000/api', // Point to our backend proxy
-    dangerouslyAllowBrowser: true, // Allow running in browser (only for development)
-    apiKey: 'dummy-key', // This will be ignored by our backend proxy
-  });
-
-  const handleSendMessage = async () => {
-    if (input.trim() === '' || isLoading) return;
-    
-    // Add user message
-    const userMessage = { role: 'user', content: input };
-    const newMessages = [...messages, userMessage];
-    setMessages(newMessages);
-    setInput('');
-    setIsLoading(true);
-    setCurrentStreamingMessage('');
-    
-    // Cancel any previous streaming request
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-
-    // Create a new abort controller for this request
-    abortControllerRef.current = new AbortController();
-    
-    try {
-      // Prepare messages for API - include all conversation history
-      const apiMessages = [
-        { role: 'system', content: 'You are a helpful AI assistant.' },
-        ...newMessages
-      ];
-      
-      // Use streaming for improved user experience
-      const stream = await openai.chat.completions.create({
-        messages: apiMessages as any[],
-        model: 'gpt-4o',
-        max_tokens: 500,
-        stream: true,
-        signal: abortControllerRef.current.signal
-      });
-
-      let fullContent = '';
-      for await (const chunk of stream) {
-        const content = chunk.choices[0]?.delta?.content || '';
-        fullContent += content;
-        setCurrentStreamingMessage(fullContent);
-      }
-
-      // Once streaming is complete, add the full message to the chat
-      setMessages([...newMessages, { 
-        role: 'assistant', 
-        content: fullContent || 'Sorry, I couldn\'t generate a response.'
-      }]);
-      
-    } catch (error) {
-      // Ignore abort errors as they're expected when canceling
-      if ((error as Error).name !== 'AbortError') {
-        console.error('Error calling API:', error);
-        setMessages([...newMessages, { 
-          role: 'assistant', 
-          content: 'Sorry, there was an error processing your request. Please try again later.'
-        }]);
-      }
-    } finally {
-      setIsLoading(false);
-      setCurrentStreamingMessage('');
-      abortControllerRef.current = null;
-    }
-  };
-
-  // Function to cancel a streaming response
-  const handleCancelStream = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-      setIsLoading(false);
-      
-      // If we have a partial message, add it to the conversation
-      if (currentStreamingMessage) {
-        setMessages(prev => [...prev, {
-          role: 'assistant',
-          content: currentStreamingMessage + ' [Response interrupted]'
-        }]);
-        setCurrentStreamingMessage('');
-      }
-    }
-  };
+  const {
+    messages,
+    input,
+    setInput,
+    isLoading,
+    currentStreamingMessage,
+    handleSendMessage,
+    handleCancelStream
+  } = useChatWithHistory({ initialMessages });
 
   return (
     <div className="flex flex-col h-screen bg-base-200 max-w-md mx-auto">
