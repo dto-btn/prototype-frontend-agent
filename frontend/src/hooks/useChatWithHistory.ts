@@ -31,29 +31,26 @@ type ChatHistoryServiceState = {
   savingStates?: string[];
 };
 
+// --- ChatHistoryService: manages chat state, persistence, and title generation ---
 class ChatHistoryService {
-  private messages: Message[] = [];
-  private input: string = '';
-  private conversationId: string | null = null;
-  private savingStates: string[] = [];
-  private title: string = 'New Conversation';
+  private state: ChatHistoryServiceState;
+  private listeners: { [K in keyof ChatHistoryServiceState]?: ((val: any) => void)[] } = {};
   private pendingSave = false;
   private titleGenerated = false;
   private awaitingTitleUpdate = false;
-  private listeners: { [K in keyof ChatHistoryServiceState]?: ((val: any) => void)[] } = {};
 
   constructor(initialMessages: Message[] = [], initialConversationId?: string) {
-    this.messages = initialMessages;
-    if (initialConversationId) {
-      this.conversationId = initialConversationId;
-      this.loadConversation(initialConversationId);
-    }
-    if (initialMessages.length > 0) {
-      const userMessage = initialMessages.find(m => m.role === 'user');
-      if (userMessage) {
-        this.title = this.extractTitle(userMessage.content);
-      }
-    }
+    this.state = {
+      messages: initialMessages,
+      input: '',
+      conversationId: initialConversationId || null,
+      isSaving: false,
+      title: initialMessages.length > 0
+        ? this.extractTitle(initialMessages.find(m => m.role === 'user')?.content || '')
+        : 'New Conversation',
+      savingStates: [],
+    };
+    if (initialConversationId) this.loadConversation(initialConversationId);
   }
 
   private notify<K extends keyof ChatHistoryServiceState>(key: K, value: ChatHistoryServiceState[K]) {
@@ -63,30 +60,24 @@ class ChatHistoryService {
   subscribe<K extends keyof ChatHistoryServiceState>(key: K, cb: (val: ChatHistoryServiceState[K]) => void) {
     if (!this.listeners[key]) this.listeners[key] = [];
     this.listeners[key]!.push(cb);
-    // Initial call
-    cb(this[key]);
+    cb(this.state[key]);
     return () => {
       this.listeners[key] = (this.listeners[key] || []).filter(fn => fn !== cb);
     };
   }
 
   private setState<K extends keyof ChatHistoryServiceState>(key: K, value: ChatHistoryServiceState[K]) {
-    this[key] = value;
+    this.state[key] = value;
     this.notify(key, value);
   }
 
   private setSaving(key: string, saving: boolean) {
-    if (saving) {
-      if (!this.savingStates.includes(key)) {
-        this.savingStates = [...this.savingStates, key];
-        this.notify('savingStates', this.savingStates);
-      }
-    } else {
-      if (this.savingStates.includes(key)) {
-        this.savingStates = this.savingStates.filter(k => k !== key);
-        this.notify('savingStates', this.savingStates);
-      }
-    }
+    const savingStates = this.state.savingStates || [];
+    const next = saving
+      ? savingStates.includes(key) ? savingStates : [...savingStates, key]
+      : savingStates.filter(k => k !== key);
+    this.setState('savingStates', next);
+    this.setState('isSaving', next.length > 0);
   }
 
   async loadConversation(id: string) {
@@ -103,20 +94,15 @@ class ChatHistoryService {
   }
 
   async saveConversation(title: string): Promise<void> {
-    const messages = this.messages;
-    if (messages.length === 0) {
-      console.warn('Cannot save empty conversation');
-      return;
-    }
-    let id = this.conversationId;
+    const { messages, conversationId } = this.state;
+    if (messages.length === 0) return;
     this.setSaving('conversation-create', true);
     try {
-      if (!id) {
+      if (!conversationId) {
         const conversation = await ConversationService.createConversation(title, messages);
         this.setState('conversationId', conversation.id);
-        id = conversation.id;
       } else {
-        await ConversationService.updateConversation(id, { title, messages });
+        await ConversationService.updateConversation(conversationId, { title, messages });
       }
     } catch (error) {
       console.error('Error creating/updating conversation:', error);
@@ -138,48 +124,45 @@ class ChatHistoryService {
       this.setState('title', 'New Conversation');
       this.titleGenerated = false;
       this.awaitingTitleUpdate = false;
-      this.savingStates = [];
-      this.notify('savingStates', this.savingStates);
+      this.setState('savingStates', []);
     }
   }
 
   addUserMessage(content: string) {
     if (!content.trim()) return;
     const userMessage: Message = { role: 'user', content };
-    const newMessages = [...this.messages, userMessage];
+    const newMessages = [...this.state.messages, userMessage];
     this.setState('messages', newMessages);
     this.setState('input', '');
-    const conversationId = this.conversationId;
-    if (conversationId) {
-      this.debouncedSave(conversationId, undefined, newMessages);
+    if (this.state.conversationId) {
+      this.debouncedSave(this.state.conversationId, undefined, newMessages);
     }
   }
 
   addAssistantMessage(content: string) {
     if (!content) return;
     const assistantMessage: Message = { role: 'assistant', content };
-    const updatedMessages = [...this.messages, assistantMessage];
+    const updatedMessages = [...this.state.messages, assistantMessage];
     this.setState('messages', updatedMessages);
-    const conversationId = this.conversationId;
+    const { conversationId } = this.state;
     const isFirstQAComplete = !conversationId && updatedMessages.length >= 1;
     if (isFirstQAComplete) {
       this.setState('title', 'Untitled Conversation');
       this.awaitingTitleUpdate = true;
       this.generateTitle(JSON.stringify(updatedMessages).substring(0, 100)).then(title => {
         this.setState('title', title);
-        const currentId = this.conversationId;
-        if (currentId && this.awaitingTitleUpdate) {
-          this.debouncedSave(currentId, title, this.messages);
+        if (this.state.conversationId && this.awaitingTitleUpdate) {
+          this.debouncedSave(this.state.conversationId, title, this.state.messages);
           this.awaitingTitleUpdate = false;
         }
       });
     }
     if (conversationId) {
-      this.debouncedSave(conversationId, this.awaitingTitleUpdate ? this.title : undefined, updatedMessages);
+      this.debouncedSave(conversationId, this.awaitingTitleUpdate ? this.state.title : undefined, updatedMessages);
     } else if (updatedMessages.length >= 1) {
       const userMessage = updatedMessages.find(m => m.role === 'user');
       if (userMessage) {
-        const title = this.titleGenerated ? this.title : this.extractTitle(userMessage.content);
+        const title = this.titleGenerated ? this.state.title : this.extractTitle(userMessage.content);
         ConversationService.createConversation(title, updatedMessages)
           .then(conversation => {
             this.setState('conversationId', conversation.id);
@@ -213,9 +196,8 @@ class ChatHistoryService {
       const title = await generateTitle(content);
       this.titleGenerated = true;
       this.setState('title', title);
-      const conversationId = this.conversationId;
-      if (conversationId && this.awaitingTitleUpdate) {
-        this.debouncedSave(conversationId, title, this.messages);
+      if (this.state.conversationId && this.awaitingTitleUpdate) {
+        this.debouncedSave(this.state.conversationId, title, this.state.messages);
         this.awaitingTitleUpdate = false;
       }
       return title;
@@ -237,28 +219,26 @@ class ChatHistoryService {
       : 'New Conversation';
   }
 
-  // Getters for hook
   getState(): ChatHistoryServiceState {
-    return {
-      messages: this.messages,
-      input: this.input,
-      conversationId: this.conversationId,
-      isSaving: this.savingStates.length > 0,
-      title: this.title,
-    };
+    return { ...this.state };
   }
 }
 
+// --- useChatWithHistory: React hook for chat with history and persistence ---
 export function useChatWithHistory({
   initialMessages = [],
   chatOptions = {},
   conversationId
 }: UseChatWithHistoryOptions = {}): UseChatWithHistoryResult {
   const historyServiceRef = useRef<ChatHistoryService | null>(null);
-  const [messages, setMessages] = useState<Message[]>(initialMessages);
-  const [input, setInput] = useState<string>('');
-  const [currentConversationId, setCurrentConversationId] = useState<string | null>(conversationId || null);
-  const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [state, setState] = useState<ChatHistoryServiceState>({
+    messages: initialMessages,
+    input: '',
+    conversationId: conversationId || null,
+    isSaving: false,
+    title: 'New Conversation',
+    savingStates: [],
+  });
 
   const {
     isLoading,
@@ -273,16 +253,13 @@ export function useChatWithHistory({
 
   useEffect(() => {
     const historyService = historyServiceRef.current!;
-    const unsubMessages = historyService.subscribe('messages', setMessages);
-    const unsubInput = historyService.subscribe('input', setInput);
-    const unsubConversationId = historyService.subscribe('conversationId', setCurrentConversationId);
-    const unsubSaving = historyService.subscribe('savingStates', (states: string[]) => setIsSaving(states.length > 0));
-    return () => {
-      unsubMessages();
-      unsubInput();
-      unsubConversationId();
-      unsubSaving();
-    };
+    const unsubs = [
+      historyService.subscribe('messages', (v) => setState(s => ({ ...s, messages: v })) ),
+      historyService.subscribe('input', (v) => setState(s => ({ ...s, input: v })) ),
+      historyService.subscribe('conversationId', (v) => setState(s => ({ ...s, conversationId: v })) ),
+      historyService.subscribe('isSaving', (v) => setState(s => ({ ...s, isSaving: v })) ),
+    ];
+    return () => { unsubs.forEach(unsub => unsub()); };
   }, []);
 
   const handleSetConversationId = useCallback((id: string | null) => {
@@ -290,14 +267,14 @@ export function useChatWithHistory({
   }, []);
 
   const handleSendMessage = useCallback(async () => {
-    if (input.trim() === '' || isLoading) return;
+    if (state.input.trim() === '' || isLoading) return;
     const historyService = historyServiceRef.current!;
-    historyService.addUserMessage(input);
+    historyService.addUserMessage(state.input);
     const response = await sendMessage(historyService.getState().messages);
     if (response) {
       historyService.addAssistantMessage(response);
     }
-  }, [input, isLoading, sendMessage]);
+  }, [state.input, isLoading, sendMessage]);
 
   const handleCancelStream = useCallback(() => {
     const result = cancelStream() as unknown as string;
@@ -315,16 +292,16 @@ export function useChatWithHistory({
   }, []);
 
   return {
-    messages,
-    input,
+    messages: state.messages,
+    input: state.input,
     setInput: handleSetInput,
     isLoading,
     currentStreamingMessage,
     handleSendMessage,
     handleCancelStream,
-    conversationId: currentConversationId,
+    conversationId: state.conversationId,
     saveConversation: handleSaveConversation,
-    isSaving,
+    isSaving: state.isSaving,
     setConversationId: handleSetConversationId,
     cancelStream
   };
