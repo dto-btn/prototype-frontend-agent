@@ -194,7 +194,6 @@ class ChatHistoryService {
       this.title$.next('New Conversation');
       this.titleGenerated = false; // Reset title generation flag
       this.awaitingTitleUpdate = false; // Reset awaiting title update flag
-      console.log('Reset title generation state for new conversation');
     }
   }
   
@@ -225,29 +224,20 @@ class ChatHistoryService {
     
     const conversationId = this.conversationId$.getValue();
     
-    // Check if this is a new conversation that just completed a first Q&A exchange:
-    // 1. We have 3 messages (greeting, user question, assistant answer)
-    // 2. They follow the correct role pattern
-    // 3. We haven't generated a title for this conversation yet
-    const isFirstQAComplete = 
-      updatedMessages.length === 3 && 
-      updatedMessages[0].role === 'assistant' &&
-      updatedMessages[1].role === 'user' &&
-      updatedMessages[2].role === 'assistant' &&
-      !this.titleGenerated;
+    // Check if this is a new conversation that just completed a new Q&A exchange.
+    // You can do this by checking if there is a conversation ID.
+    const currentId = this.conversationId$.getValue();
+    const isFirstQAComplete = !currentId && updatedMessages.length >= 1;
     
     if (isFirstQAComplete) {
-      console.log('First complete Q&A detected, generating title...');
-      const userMessage = updatedMessages[1].content;
-      const assistantResponse = updatedMessages[2].content;
-      
+      console.log('First complete Q&A detected, generating title...');      
       // Show a temporary title while AI generates the better one
-      const tempTitle = this.extractTitle(userMessage);
+      const tempTitle = "Untitled Conversation";
       this.title$.next(tempTitle);
       this.awaitingTitleUpdate = true; // Mark this conversation as awaiting title update
       
       // Generate AI title asynchronously and update when ready
-      this.generateTitle(userMessage, assistantResponse).then(title => {
+      this.generateTitle(JSON.stringify(updatedMessages).substring(0, 100)).then(title => {
         console.log('AI title generated:', title);
         // Update the title in the UI
         this.title$.next(title);
@@ -277,7 +267,7 @@ class ChatHistoryService {
       );
     } 
     // If this is a new conversation (no ID yet) and we have messages, create a new one
-    else if (updatedMessages.length >= 2) { // At least one user message and one assistant message
+    else if (updatedMessages.length >= 1) { // At least one user message is required
       const userMessage = updatedMessages.find(m => m.role === 'user');
       if (userMessage) {
         // Use the generated title if available, otherwise extract from the message
@@ -298,11 +288,11 @@ class ChatHistoryService {
   }
   
   // Generate a meaningful title based on the conversation content using AI
-  private async generateTitle(userMessage: string, assistantResponse: string): Promise<string> {
+  private async generateTitle(content: string): Promise<string> {
     try {
       // Use the AI-powered title generation service
       console.log('Generating title with AI for conversation');
-      const title = await generateTitle(userMessage, assistantResponse);
+      const title = await generateTitle(content);
       console.log('AI generated title:', title);
       
       this.titleGenerated = true; // Mark that we've generated a title for this conversation

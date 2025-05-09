@@ -14,14 +14,13 @@ const openai = new OpenAI({
  * @param assistantResponse The first response from the assistant
  * @returns A generated title for the conversation
  */
-export async function generateTitle(userMessage: string, assistantResponse: string): Promise<string> {
-    console.log('Generating title for conversation:', userMessage, assistantResponse);
+export async function generateTitle(content: string): Promise<string> {
+    console.log('Generating title for conversation:', content);
   try {
     // Create a prompt instructing the model to generate a short, descriptive title
     const prompt = `Generate a short, descriptive title (5-7 words maximum) for a conversation that starts with:
     
-User: ${userMessage}
-Assistant: ${assistantResponse.substring(0, 200)}${assistantResponse.length > 200 ? '...' : ''}
+    ${ content }
 
 The title should capture the main topic or question. Return only the title without quotes or additional text.`;
 
@@ -50,7 +49,7 @@ The title should capture the main topic or question. Return only the title witho
     console.error('Error generating title with AI:', error);
     
     // Fallback to a simple title extraction
-    const simpleTitle = extractSimpleTitle(userMessage);
+    const simpleTitle = extractSimpleTitle(content);
     return simpleTitle;
   }
 }
