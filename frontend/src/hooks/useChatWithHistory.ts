@@ -48,6 +48,11 @@ class ChatHistoryService {
       });
     }
   }, 300); // 300ms debounce
+
+  // Isolated method for setting saving state
+  private setSaving(isSaving: boolean) {
+    this.isSaving$.next(isSaving);
+  }
   
   constructor(initialMessages: Message[] = [], initialConversationId?: string) {
     this.messages$.next(initialMessages);
@@ -67,7 +72,7 @@ class ChatHistoryService {
     
     // Set up save conversation subscription
     this.saveConversation$.pipe(
-      tap(() => this.isSaving$.next(true)),
+      tap(() => this.setSaving(true)),
       switchMap(({ id, title, messages }) => 
         ConversationService.updateConversation(id, {
           // Only include title in the update if it's defined
@@ -81,7 +86,7 @@ class ChatHistoryService {
         )
       ),
       finalize(() => {
-        this.isSaving$.next(false);
+        this.setSaving(false);
         this.pendingSave = false; // Reset pending flag after operation completes
       })
     ).subscribe(result => {
@@ -92,17 +97,17 @@ class ChatHistoryService {
   }
   
   loadConversation(id: string): void {
-    this.isSaving$.next(true);
+    this.setSaving(true);
     
     ConversationService.getConversation(id).subscribe({
       next: conversation => {
         this.messages$.next(conversation.messages);
         this.conversationId$.next(conversation.id);
-        this.isSaving$.next(false);
+        this.setSaving(false);
       },
       error: error => {
         console.error('Error loading conversation:', error);
-        this.isSaving$.next(false);
+        this.setSaving(false);
       }
     });
   }
@@ -116,27 +121,29 @@ class ChatHistoryService {
     }
     
     let id = this.conversationId$.getValue();
+    this.setSaving(true);
     
-    // If no ID exists, create a new conversation
-    if (!id) {
-      try {
+    try {
+      // If no ID exists, create a new conversation
+      if (!id) {
         const conversation = await firstValueFrom(
           ConversationService.createConversation(title, messages)
         );
         this.conversationId$.next(conversation.id);
         id = conversation.id;
         // No need to manually update conversationStore as ConversationService now does it
-      } catch (error) {
-        console.error('Error creating conversation:', error);
-        return;
+      } else {
+        // Use existing ID to update the conversation
+        this.saveConversation$.next({
+          id,
+          title,
+          messages
+        });
       }
-    } else {
-      // Use existing ID to update the conversation
-      this.saveConversation$.next({
-        id,
-        title,
-        messages
-      });
+    } catch (error) {
+      console.error('Error creating conversation:', error);
+    } finally {
+      this.setSaving(false);
     }
   }
   
@@ -194,6 +201,7 @@ class ChatHistoryService {
       this.title$.next('New Conversation');
       this.titleGenerated = false; // Reset title generation flag
       this.awaitingTitleUpdate = false; // Reset awaiting title update flag
+      this.setSaving(false);
     }
   }
   
