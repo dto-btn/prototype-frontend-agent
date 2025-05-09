@@ -196,6 +196,14 @@ class ChatHistoryService {
       const title = await generateTitle(content);
       this.titleGenerated = true;
       this.setState('title', title);
+      // --- Update the server with the new title if conversationId exists ---
+      if (this.state.conversationId) {
+        try {
+          await ConversationService.updateConversation(this.state.conversationId, { title });
+        } catch (error) {
+          console.error('Error updating conversation title on server:', error);
+        }
+      }
       if (this.state.conversationId && this.awaitingTitleUpdate) {
         this.debouncedSave(this.state.conversationId, title, this.state.messages);
         this.awaitingTitleUpdate = false;

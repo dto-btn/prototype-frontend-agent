@@ -11,7 +11,7 @@ export interface Conversation {
 
 export interface ConversationUpdate {
   title?: string;
-  messages: Message[];
+  messages?: Message[];
 }
 
 const API_URL = 'http://localhost:5000/api';
