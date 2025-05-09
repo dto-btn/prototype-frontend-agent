@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useChat, type Message, type UseChatResult } from './useChat';
 import { BehaviorSubject, Observable, of, Subject, firstValueFrom } from 'rxjs';
-import { switchMap, catchError, tap, finalize } from 'rxjs/operators';
+import { switchMap, catchError, tap, finalize, map } from 'rxjs/operators';
 import { ConversationService } from '../services/conversationService';
 import { debounce } from '../utils/debounce';
 import { generateTitle } from '../services/titleGenerationService';
@@ -29,7 +29,7 @@ class ChatHistoryService {
   private messages$ = new BehaviorSubject<Message[]>([]);
   private input$ = new BehaviorSubject<string>('');
   private conversationId$ = new BehaviorSubject<string | null>(null);
-  private isSaving$ = new BehaviorSubject<boolean>(false);
+  private savingStates$ = new BehaviorSubject<string[]>([]);
   private title$ = new BehaviorSubject<string>('New Conversation');
   private saveConversation$ = new Subject<{ id: string, title?: string, messages: Message[] }>();
   private pendingSave = false; // Track if a save is already pending
@@ -49,9 +49,18 @@ class ChatHistoryService {
     }
   }, 300); // 300ms debounce
 
-  // Isolated method for setting saving state
-  private setSaving(isSaving: boolean) {
-    this.isSaving$.next(isSaving);
+  // Add/remove a saving key
+  private setSaving(key: string, saving: boolean) {
+    const current = this.savingStates$.getValue();
+    if (saving) {
+      if (!current.includes(key)) {
+        this.savingStates$.next([...current, key]);
+      }
+    } else {
+      if (current.includes(key)) {
+        this.savingStates$.next(current.filter(k => k !== key));
+      }
+    }
   }
   
   constructor(initialMessages: Message[] = [], initialConversationId?: string) {
@@ -72,7 +81,7 @@ class ChatHistoryService {
     
     // Set up save conversation subscription
     this.saveConversation$.pipe(
-      tap(() => this.setSaving(true)),
+      tap(() => this.setSaving('conversation-update', true)),
       switchMap(({ id, title, messages }) => 
         ConversationService.updateConversation(id, {
           // Only include title in the update if it's defined
@@ -86,7 +95,7 @@ class ChatHistoryService {
         )
       ),
       finalize(() => {
-        this.setSaving(false);
+        this.setSaving('conversation-update', false);
         this.pendingSave = false; // Reset pending flag after operation completes
       })
     ).subscribe(result => {
@@ -97,17 +106,17 @@ class ChatHistoryService {
   }
   
   loadConversation(id: string): void {
-    this.setSaving(true);
+    this.setSaving('conversation-load', true);
     
     ConversationService.getConversation(id).subscribe({
       next: conversation => {
         this.messages$.next(conversation.messages);
         this.conversationId$.next(conversation.id);
-        this.setSaving(false);
+        this.setSaving('conversation-load', false);
       },
       error: error => {
         console.error('Error loading conversation:', error);
-        this.setSaving(false);
+        this.setSaving('conversation-load', false);
       }
     });
   }
@@ -121,7 +130,7 @@ class ChatHistoryService {
     }
     
     let id = this.conversationId$.getValue();
-    this.setSaving(true);
+    this.setSaving('conversation-create', true);
     
     try {
       // If no ID exists, create a new conversation
@@ -143,7 +152,7 @@ class ChatHistoryService {
     } catch (error) {
       console.error('Error creating conversation:', error);
     } finally {
-      this.setSaving(false);
+      this.setSaving('conversation-create', false);
     }
   }
   
@@ -160,7 +169,7 @@ class ChatHistoryService {
   }
   
   get isSaving(): boolean {
-    return this.isSaving$.getValue();
+    return this.savingStates$.getValue().length > 0;
   }
 
   get title(): string {
@@ -180,7 +189,9 @@ class ChatHistoryService {
   }
   
   get isSaving$Observable(): Observable<boolean> {
-    return this.isSaving$.asObservable();
+    return this.savingStates$.asObservable().pipe(
+      map(states => states.length > 0)
+    );
   }
 
   get title$Observable(): Observable<string> {
@@ -201,7 +212,7 @@ class ChatHistoryService {
       this.title$.next('New Conversation');
       this.titleGenerated = false; // Reset title generation flag
       this.awaitingTitleUpdate = false; // Reset awaiting title update flag
-      this.setSaving(false);
+      this.savingStates$.next([]); // Reset all saving states
     }
   }
   
@@ -297,6 +308,7 @@ class ChatHistoryService {
   
   // Generate a meaningful title based on the conversation content using AI
   private async generateTitle(content: string): Promise<string> {
+    this.setSaving('title-generation', true);
     try {
       // Use the AI-powered title generation service
       console.log('Generating title with AI for conversation');
@@ -319,9 +331,11 @@ class ChatHistoryService {
     } catch (error) {
       console.error('Error generating title with AI:', error);
       this.awaitingTitleUpdate = false; // Reset the flag on error
-      const extractedTitle = this.extractTitle(userMessage); // Fallback to simple extraction
+      const extractedTitle = this.extractTitle(content); // Fallback to simple extraction
       this.titleGenerated = true; // Still mark title as generated even with fallback
       return extractedTitle;
+    } finally {
+      this.setSaving('title-generation', false);
     }
   }
   
