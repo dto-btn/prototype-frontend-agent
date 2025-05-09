@@ -1,6 +1,4 @@
 import { type Message } from '../hooks/useChat';
-import { Observable, from, of, throwError } from 'rxjs';
-import { map, catchError, tap } from 'rxjs/operators';
 import { conversationStore } from './conversationStore';
 
 export interface Conversation {
@@ -22,49 +20,41 @@ export class ConversationService {
   /**
    * Get all conversations
    */
-  static getAllConversations(): Observable<Conversation[]> {
-    return from(
-      fetch(`${API_URL}/conversations`)
-        .then(response => {
-          if (!response.ok) {
-            throw new Error(`Error ${response.status}: ${response.statusText}`);
-          }
-          return response.json();
-        })
-    ).pipe(
-      catchError(error => {
-        console.error('Error fetching conversations:', error);
-        return throwError(() => error);
-      })
-    );
+  static async getAllConversations(): Promise<Conversation[]> {
+    try {
+      const response = await fetch(`${API_URL}/conversations`);
+      if (!response.ok) {
+        throw new Error(`Error ${response.status}: ${response.statusText}`);
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('Error fetching conversations:', error);
+      throw error;
+    }
   }
 
   /**
    * Get a specific conversation by ID
    */
-  static getConversation(id: string): Observable<Conversation> {
-    return from(
-      fetch(`${API_URL}/conversations/${id}`)
-        .then(response => {
-          if (!response.ok) {
-            throw new Error(`Error ${response.status}: ${response.statusText}`);
-          }
-          return response.json();
-        })
-    ).pipe(
-      catchError(error => {
-        console.error(`Error fetching conversation ${id}:`, error);
-        return throwError(() => error);
-      })
-    );
+  static async getConversation(id: string): Promise<Conversation> {
+    try {
+      const response = await fetch(`${API_URL}/conversations/${id}`);
+      if (!response.ok) {
+        throw new Error(`Error ${response.status}: ${response.statusText}`);
+      }
+      return await response.json();
+    } catch (error) {
+      console.error(`Error fetching conversation ${id}:`, error);
+      throw error;
+    }
   }
 
   /**
    * Create a new conversation
    */
-  static createConversation(title: string, initialMessages: Message[] = []): Observable<Conversation> {
-    return from(
-      fetch(`${API_URL}/conversations`, {
+  static async createConversation(title: string, initialMessages: Message[] = []): Promise<Conversation> {
+    try {
+      const response = await fetch(`${API_URL}/conversations`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -73,81 +63,60 @@ export class ConversationService {
           title,
           messages: initialMessages,
         }),
-      })
-        .then(response => {
-          if (!response.ok) {
-            throw new Error(`Error ${response.status}: ${response.statusText}`);
-          }
-          return response.json();
-        })
-    ).pipe(
-      tap(conversation => {
-        // Update the store with the new conversation
-        conversationStore.updateConversation(conversation);
-      }),
-      catchError(error => {
-        console.error('Error creating conversation:', error);
-        return throwError(() => error);
-      })
-    );
+      });
+      if (!response.ok) {
+        throw new Error(`Error ${response.status}: ${response.statusText}`);
+      }
+      const conversation = await response.json();
+      conversationStore.updateConversation(conversation);
+      return conversation;
+    } catch (error) {
+      console.error('Error creating conversation:', error);
+      throw error;
+    }
   }
 
   /**
    * Update an existing conversation or create if it doesn't exist
    */
-  static updateConversation(id: string, update: ConversationUpdate): Observable<Conversation> {
-    console.log(`Updating conversation ${id} with title: "${update.title}"`, update);
-    
-    return from(
-      fetch(`${API_URL}/conversations/${id}`, {
+  static async updateConversation(id: string, update: ConversationUpdate): Promise<Conversation> {
+    try {
+      const response = await fetch(`${API_URL}/conversations/${id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(update),
-      })
-        .then(response => {
-          if (!response.ok) {
-            throw new Error(`Error ${response.status}: ${response.statusText}`);
-          }
-          return response.json();
-        })
-    ).pipe(
-      tap(conversation => {
-        // Update the store with the updated conversation
-        console.log(`Successfully updated conversation in API, updating store: ${conversation.id}, title: "${conversation.title}"`);
-        conversationStore.updateConversation(conversation);
-      }),
-      catchError(error => {
-        console.error(`Error updating conversation ${id}:`, error);
-        return throwError(() => error);
-      })
-    );
+      });
+      if (!response.ok) {
+        throw new Error(`Error ${response.status}: ${response.statusText}`);
+      }
+      const conversation = await response.json();
+      conversationStore.updateConversation(conversation);
+      return conversation;
+    } catch (error) {
+      console.error(`Error updating conversation ${id}:`, error);
+      throw error;
+    }
   }
 
   /**
    * Delete a conversation
    */
-  static deleteConversation(id: string): Observable<{ success: boolean; message: string }> {
-    return from(
-      fetch(`${API_URL}/conversations/${id}`, {
+  static async deleteConversation(id: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const response = await fetch(`${API_URL}/conversations/${id}`, {
         method: 'DELETE',
-      })
-        .then(response => {
-          if (!response.ok) {
-            throw new Error(`Error ${response.status}: ${response.statusText}`);
-          }
-          return response.json();
-        })
-    ).pipe(
-      tap(() => {
-        // Remove the conversation from the store
-        conversationStore.removeConversation(id);
-      }),
-      catchError(error => {
-        console.error(`Error deleting conversation ${id}:`, error);
-        return throwError(() => error);
-      })
-    );
+      });
+      if (!response.ok) {
+        throw new Error(`Error ${response.status}: ${response.statusText}`);
+      }
+      const result = await response.json();
+      conversationStore.removeConversation(id);
+      return result;
+    } catch (error) {
+      console.error(`Error deleting conversation ${id}:`, error);
+      throw error;
+    }
   }
 }

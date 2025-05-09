@@ -1,75 +1,71 @@
-import { BehaviorSubject, Observable, firstValueFrom } from 'rxjs';
-import { map } from 'rxjs/operators';
 import { ConversationService, type Conversation } from './conversationService';
 
 // Singleton service to manage conversation state
 class ConversationStore {
-  private conversations$ = new BehaviorSubject<Conversation[]>([]);
-  private isLoading$ = new BehaviorSubject<boolean>(false);
+  private conversations: Conversation[] = [];
+  private isLoading = false;
   private initialized = false;
+  private listeners: (() => void)[] = [];
 
-  // Get all conversations as an observable
-  get conversations(): Observable<Conversation[]> {
-    // Load conversations if not already loaded
-    if (!this.initialized) {
-      this.loadConversations();
-    }
-    return this.conversations$.asObservable().pipe(
-      map(conversations => 
-        // Sort conversations by updated_at in descending order (newest first)
-        [...conversations].sort((a, b) => 
-          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-        )
-      )
+  // Subscribe to store changes
+  subscribe(listener: () => void) {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter(l => l !== listener);
+    };
+  }
+
+  private notify() {
+    this.listeners.forEach(l => l());
+  }
+
+  // Get all conversations (sorted)
+  getConversations(): Conversation[] {
+    return [...this.conversations].sort((a, b) =>
+      new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
     );
   }
 
-  // Get loading state as an observable
-  get isLoading(): Observable<boolean> {
-    return this.isLoading$.asObservable();
+  // Get loading state
+  getIsLoading(): boolean {
+    return this.isLoading;
   }
 
   // Load all conversations
   async loadConversations(): Promise<void> {
-    this.isLoading$.next(true);
-    
+    this.isLoading = true;
+    this.notify();
     try {
-      const conversations = await firstValueFrom(ConversationService.getAllConversations());
+      const conversations = await ConversationService.getAllConversations();
       console.log('Loaded conversations from server:', conversations.length);
-      this.conversations$.next(conversations);
+      this.conversations = conversations;
       this.initialized = true;
     } catch (error) {
       console.error('Error loading conversations:', error);
     } finally {
-      this.isLoading$.next(false);
+      this.isLoading = false;
+      this.notify();
     }
   }
 
   // Add or update a conversation in the store
   updateConversation(conversation: Conversation): void {
-    const currentConversations = this.conversations$.getValue();
-    const index = currentConversations.findIndex(c => c.id === conversation.id);
-    
+    const index = this.conversations.findIndex(c => c.id === conversation.id);
     if (index >= 0) {
-      // Update existing conversation
       console.log(`Updating existing conversation in store: ${conversation.id}, title: "${conversation.title}"`);
-      const updatedConversations = [...currentConversations];
-      updatedConversations[index] = conversation;
-      this.conversations$.next(updatedConversations);
+      this.conversations[index] = conversation;
     } else {
-      // Add new conversation
       console.log(`Adding new conversation to store: ${conversation.id}, title: "${conversation.title}"`);
-      this.conversations$.next([...currentConversations, conversation]);
+      this.conversations.push(conversation);
     }
+    this.notify();
   }
 
   // Remove a conversation from the store
   removeConversation(id: string): void {
-    const currentConversations = this.conversations$.getValue();
-    const updatedConversations = currentConversations.filter(c => c.id !== id);
-    this.conversations$.next(updatedConversations);
+    this.conversations = this.conversations.filter(c => c.id !== id);
+    this.notify();
   }
 }
 
-// Export as a singleton
 export const conversationStore = new ConversationStore();

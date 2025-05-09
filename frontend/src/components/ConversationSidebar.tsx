@@ -20,31 +20,26 @@ export function ConversationSidebar({
 
   // Subscribe to the conversation store for real-time updates
   useEffect(() => {
-    const conversationSub = conversationStore.conversations.subscribe(setConversations);
-    const loadingSub = conversationStore.isLoading.subscribe(setIsLoading);
-    
+    // Set initial state
+    setConversations(conversationStore.getConversations());
+    setIsLoading(conversationStore.getIsLoading());
+    // Subscribe to store updates
+    const unsubscribe = conversationStore.subscribe(() => {
+      setConversations(conversationStore.getConversations());
+      setIsLoading(conversationStore.getIsLoading());
+    });
+    // Initial load if needed
+    conversationStore.loadConversations();
     return () => {
-      conversationSub.unsubscribe();
-      loadingSub.unsubscribe();
+      unsubscribe();
     };
   }, []);
 
   const handleDeleteConversation = async (id: string, e: React.MouseEvent<HTMLButtonElement>) => {
-    e.stopPropagation(); // Prevent triggering conversation selection
-    
+    e.stopPropagation();
     if (window.confirm('Are you sure you want to delete this conversation?')) {
       try {
-        await new Promise<void>((resolve, reject) => {
-          ConversationService.deleteConversation(id).subscribe({
-            next: () => {
-              // Update local store immediately for responsive UI
-              conversationStore.removeConversation(id);
-              resolve();
-            },
-            error: (err) => reject(err)
-          });
-        });
-        
+        await ConversationService.deleteConversation(id);
         // If the deleted conversation was active, trigger new conversation
         if (activeConversationId === id) {
           onNewConversation();
