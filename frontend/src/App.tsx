@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useChatWithHistory } from './hooks/useChatWithHistory';
 import { ConversationSidebar } from './components/ConversationSidebar';
+import { connectClient } from './mcp-test';
+window.connectClient = connectClient;
 
 // Default welcome message for new conversations
 const defaultInitialMessages = [
